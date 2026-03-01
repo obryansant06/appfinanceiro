@@ -112,6 +112,9 @@ class DB:
         if tipo:   sql+=" AND tipo=?"; p.append(tipo)
         sql+=" ORDER BY data DESC,id DESC LIMIT ?"; p.append(limit)
         return self.q(sql,p)
+    def get_tx_por_id(self, i):
+        r = self.q("SELECT * FROM tx WHERE id=?", (i,))
+        return dict(r[0]) if r else None
     def del_tx(self,i): self.run("DELETE FROM tx WHERE id=?",(i,))
     def resumo(self,mes,ano):
         r=self.q("""SELECT SUM(CASE WHEN tipo='receita' THEN valor ELSE 0 END) r,
@@ -154,6 +157,12 @@ class DB:
     def get_div(self): return self.q("SELECT * FROM div WHERE ativo=1 ORDER BY venc")
     def pagar(self,i,v): self.run("UPDATE div SET pago=pago+?,parc_atual=parc_atual+1 WHERE id=?",(v,i))
     def del_div(self,i): self.run("UPDATE div SET ativo=0 WHERE id=?",(i,))
+    def update_tx(self, i, tipo, desc, valor, cat, data, conta, obs="", rec=0):
+        self.run("""
+           UPDATE tx 
+           SET tipo=?, desc=?, valor=?, cat=?, data=?, conta=?, obs=?, rec=?
+           WHERE id=?
+        """, (tipo, desc, valor, cat, data, conta, obs, rec, i))
 
 
 class Card(ctk.CTkFrame):
@@ -287,7 +296,7 @@ class App(ctk.CTk):
         dot = ctk.CTkFrame(logo, fg_color=ACCENT, width=32, height=32, corner_radius=8)
         dot.pack(side="left", pady=12)
         ctk.CTkLabel(dot, text="₣", font=("Segoe UI",15,"bold"), text_color=WHITE).place(relx=.5,rely=.5,anchor="center")
-        ctk.CTkLabel(logo, text=" FinanceFlow", font=("Segoe UI",14,"bold"), text_color=WHITE).pack(side="left")
+        ctk.CTkLabel(logo, text=" Controlador Financeiro", font=("Segoe UI",14,"bold"), text_color=WHITE).pack(side="left")
 
         Div(sb).pack(fill="x", padx=12, pady=(0,8))
 
@@ -520,28 +529,38 @@ class App(ctk.CTk):
                 fn=("Segoe UI",11,"bold") if j==5 else ("Segoe UI",11)
                 ctk.CTkLabel(row,text=v,font=fn,text_color=fc,anchor="w",width=w).grid(
                     row=0,column=j,padx=8,pady=5,sticky="w")
+            ctk.CTkButton(row, text="✏", width=26, height=22, fg_color="transparent", 
+                          hover_color=ACCENT, text_color=TEXT3, font=("Segoe UI",10),
+                          command=lambda tid=t["id"]: self._editar_tx(tid)).grid(row=0,column=6,padx=2)
             ctk.CTkButton(row, text="✕", width=26, height=22, fg_color="transparent",
                           hover_color=RED, text_color=TEXT3, font=("Segoe UI",10),
-                          command=lambda tid=t["id"]:self._dtx(tid)).grid(row=0,column=6,padx=4)
+                          command=lambda tid=t["id"]:self._dtx(tid)).grid(row=0,column=7,padx=4)
             row.grid_columnconfigure(1,weight=1)
 
     def _dtx(self,tid):
         if messagebox.askyesno("Confirmar","Excluir esta transação?"):
             self.db.del_tx(tid); self._rtx()
-
-    def _modal_tx(self, tipo):
+            
+    def _editar_tx(self, tid):
+        tx = self.db.get_tx_por_id(tid)
+        if tx:
+            self._modal_tx(tx["tipo"], tx, tid)
+    
+    def _modal_tx(self, tipo, tx=None, edit_id=None):
         clr=GREEN if tipo=="receita" else RED
         ttl=f"💰  Nova Receita" if tipo=="receita" else "💸  Nova Despesa"
         m=Modal(self,ttl,460,500,clr)
-        desc =m.add("Descrição *")
-        valor=m.add("Valor (R$) *")
-        data =m.add("Data *",default=datetime.now().strftime("%Y-%m-%d"))
-        cats =CATS_R if tipo=="receita" else CATS_D
-        cat  =m.add("Categoria",combo=True,values=cats,default=cats[0])
-        cnts =[c["nome"] for c in self.db.q("SELECT nome FROM contas WHERE ativo=1")]
-        conta=m.add("Conta",combo=True,values=cnts,default=cnts[0] if cnts else "Principal")
+        desc = m.add("Descrição *", default=tx["desc"] if tx else "")
+        valor = m.add("Valor (R$) *", default=str(tx["valor"]) if tx else "")
+        data = m.add("Data *", default=tx["data"] if tx else datetime.now().strftime("%Y-%m-%d"))
+        cats =CATS_R if tipo=="receita" else CATS_D 
+        cat_default = tx["cat"] if tx else cats[0]
+        cat = m.add("Categoria", combo=True, values=cats, default=cat_default)
+        cnts = [c["nome"] for c in self.db.q("SELECT nome FROM contas WHERE ativo=1")]
+        conta_default = tx["conta"] if tx else (cnts[0] if cnts else "Principal")
+        conta = m.add("Conta", combo=True, values=cnts, default=conta_default)
         obs  =m.add("Observação (opcional)")
-        rv   =ctk.BooleanVar()
+        rv = ctk.BooleanVar(value=bool(tx["rec"]) if tx else False)
         ctk.CTkCheckBox(m.body,text="Recorrente (mensal)",variable=rv,fg_color=ACCENT,
                         border_color=BORDER,font=("Segoe UI",11),text_color=TEXT2).grid(
             row=m._r,column=0,sticky="w",pady=8)
@@ -552,8 +571,10 @@ class App(ctk.CTk):
                 messagebox.showwarning("Atenção","Preencha os campos obrigatórios.",parent=m); return
             try: vf=float(v_); datetime.strptime(dt_,"%Y-%m-%d")
             except: messagebox.showerror("Erro","Valor ou data inválidos.",parent=m); return
-            self.db.add_tx(tipo,d_,vf,cat.get(),dt_,conta.get(),obs.get(),int(rv.get()))
-            m.destroy()
+            if edit_id:
+                self.db.update_tx(edit_id, tipo, d_, vf, cat.get(), dt_, conta.get(), obs.get(), int(rv.get()))
+            else:
+                self.db.add_tx(tipo, d_, vf, cat.get(), dt_, conta.get(), obs.get(), int(rv.get()))
             if self._page in("transacoes","dashboard"): self._nav(self._page)
         m.footer(m.destroy,ok,"✓ Salvar",clr)
 
