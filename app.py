@@ -91,6 +91,39 @@ class DB:
         INSERT OR IGNORE INTO cfg VALUES('moeda','R$');
         """)
         self.conn.commit()
+    
+    def comparativo_mensal(self, mes, ano):
+
+       if mes == 1:
+          mes_ant = 12
+          ano_ant = ano - 1
+       else:
+          mes_ant = mes - 1
+          ano_ant = ano
+
+       atual = self.resumo_mes(mes, ano)
+       anterior = self.resumo_mes(mes_ant, ano_ant)
+
+       return {
+          "atual": atual,
+          "anterior": anterior
+       }
+
+    def resumo(self, mes, ano):
+      r = self.q("""
+        SELECT 
+        SUM(CASE WHEN tipo='receita' THEN valor ELSE 0 END) as receitas,
+        SUM(CASE WHEN tipo='despesa' THEN valor ELSE 0 END) as despesas
+        FROM tx
+        WHERE strftime('%m',data)=?
+        AND strftime('%Y',data)=?
+      """,(f"{mes:02d}", str(ano)))
+
+      receitas = r[0]["receitas"] or 0
+      despesas = r[0]["despesas"] or 0
+      saldo = receitas - despesas
+
+      return receitas, despesas, saldo
 
     def q(self, sql, p=()):   return self.conn.execute(sql,p).fetchall()
     def run(self, sql, p=()):
@@ -575,7 +608,7 @@ class App(ctk.CTk):
                 self.db.update_tx(edit_id, tipo, d_, vf, cat.get(), dt_, conta.get(), obs.get(), int(rv.get()))
             else:
                 self.db.add_tx(tipo, d_, vf, cat.get(), dt_, conta.get(), obs.get(), int(rv.get()))
-            if self._page in("transacoes","dashboard"): self._nav(self._page)
+            self._nav(self._page)
         m.footer(m.destroy,ok,"✓ Salvar",clr)
 
     def _p_graficos(self):
